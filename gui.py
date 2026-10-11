@@ -308,6 +308,20 @@ def _selftest():
         ok = False
         rec(f"!! tkinter 失败: {e}")
 
+    # adb 连通性（顺带验证子进程不会弹控制台窗口）
+    try:
+        import adbkit
+        a = adbkit.Adb()
+        t0 = time.time()
+        im = a.screenshot()
+        rec(f"adb 截图 OK: {im.size} 用时 {time.time()-t0:.2f}s")
+        rec(f"no-window 标记: {hex(adbkit._NO_WINDOW)}")
+        out = a.shell("echo ok")
+        rec(f"adb shell OK: {out!r}")
+    except Exception as e:
+        ok = False
+        rec(f"!! adb 调用失败: {type(e).__name__} {e}")
+
     rec("自检结果: " + ("全部通过" if ok else "有失败项"))
     try:
         with open(os.path.join(APP_ROOT, "selftest.log"), "w", encoding="utf-8") as f:

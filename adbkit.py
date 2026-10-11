@@ -21,6 +21,12 @@ GAME_W, GAME_H = 1920, 1080       # 游戏画面（横屏）逻辑分辨率
 # 所以所有 adb 调用一律排队执行。
 _ADB_LOCK = threading.Lock()
 
+# 关键：打包成 --windowed 的 exe 后，程序自己没有控制台，
+# 此时用 subprocess 启动 adb.exe 会**每调用一次就弹出一个黑窗口**（实测）。
+# CREATE_NO_WINDOW 让子进程不建控制台窗口。
+# （源码用 python.exe 运行时不会暴露这个问题，因为父进程有控制台可共用。）
+_NO_WINDOW = 0x08000000 if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
 
 class Adb:
     def __init__(self, adb_path: str = ADB, serial: str = SERIAL, rotate: bool = True,
@@ -37,7 +43,8 @@ class Adb:
         # 排队执行：多线程同时调 adb 会互相干扰（screencap 返回空包）
         with _ADB_LOCK:
             p = subprocess.run([self.adb, "-s", self.serial, *args],
-                               capture_output=True, timeout=timeout)
+                               capture_output=True, timeout=timeout,
+                               creationflags=_NO_WINDOW)
         return p.stdout
 
     def shell(self, cmd: str, timeout: float = 30) -> str:

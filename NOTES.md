@@ -140,7 +140,19 @@
 
 ---
 
-## 六、刻意收小的随机抖动
+## 六、打包成 exe 的坑
+
+| 坑 | 现象 | 正解 |
+|---|---|---|
+| **每个 adb 调用弹一个黑窗口** | 打包后运行时疯狂弹 cmd 窗口 | `subprocess.run` 加 `creationflags=CREATE_NO_WINDOW`（见 `adbkit._NO_WINDOW`）。源码用 python.exe 跑时父进程有控制台可共用，**所以只有打包后才暴露** |
+| 本地模块和第三方包撞名 | PyInstaller 报 `Failed to import module __PyInstaller_hooks_0_humanize` | 本地 `humanize.py` 改名为 `human_click.py` |
+| 打包后找不到模板 | `__file__` 指向解包目录、工作目录不确定 | 统一走 `core/paths.py`：`res_root()` 找只读资源，`app_root()` 放日志 |
+| onefile 在某些环境启动即崩 | `Failed to create parent directory structure` | onefile 要解包到系统 `%TEMP%`，受限环境（沙箱/被安全软件限制）会失败；改用 `--onedir` 文件夹版 |
+| windowed 程序出错没提示 | 双击没反应，也不知道哪出错 | `--selftest` 参数：把模块导入、任务发现、模板存在性、tkinter、adb 连通性写成 `selftest.log` |
+
+---
+
+## 七、刻意收小的随机抖动
 
 早期抖动给太大（±16~28），日志里落点能漂 10~20 像素，对着小按钮很危险。现在：
 
@@ -154,7 +166,7 @@
 
 ---
 
-## 七、页面识别总表（自动回庭院用）
+## 八、页面识别总表（自动回庭院用）
 
 | 页面 | 退出方式 |
 |---|---|
@@ -170,7 +182,7 @@
 
 ---
 
-## 八、重新标定的方法
+## 九、重新标定的方法
 
 `dev/` 目录里是开发期用过的脚本，都是"量一下"的工具，改分辨率/换模拟器时能复用：
 
