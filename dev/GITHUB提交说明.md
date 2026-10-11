@@ -41,11 +41,18 @@ python tools\gh_push.py --repo yys-auto-script --message "初始版本：活动�
 之后每次改完再推：
 
 ```bat
-python tools\gh_push.py --repo yys-auto-script --message "新增：xxx 功能"
+python tools\gh_push.py --repo yys_auto_script --message "新增：xxx 功能"
 ```
 
 脚本会自动跳过 `logs/`、`shots/`、`build_tmp/`、`.pydist/`、`__pycache__` 等
 不需要提交的东西（同时 `.gitignore` 里也写了，用 git 命令推也一样）。
+
+> **首次推送的说明**：仓库是空的时，GitHub 不允许用 Git Data API 建第一个 commit
+> （会报 `409 Git Repository is empty`），所以脚本会退化成用 Contents API
+> 逐个文件写入 —— 结果是每个文件一条 commit，历史比较碎。
+> 从第二次开始仓库不再为空，脚本会走 Git Data API，**一次提交把所有改动打成一个 commit**，
+> 这才是正常状态。想让首次历史也干净的话，可以在网页上把仓库删掉重建（不带 README），
+> 然后用 classic token 或本地 git 推一次。
 
 ---
 
