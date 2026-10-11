@@ -1,0 +1,33 @@
+# ---------------- 运行时产物（不提交） ----------------
+logs/
+shots/
+__pycache__/
+*.pyc
+*.pyo
+
+# 任务运行时自动存的现场图（用于排查，不需要给别人）
+tasks/*/shots_out_of_ticket*.png
+tasks/*/tools_*
+
+# ---------------- 打包产物（不提交） ----------------
+build/
+dist/
+release/
+.pydist/
+build_tmp/
+*.spec
+pip_install.log
+selftest.log
+
+# ---------------- 编辑器/系统 ----------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.log
+
+# ---------------- 明确要提交的东西（免得被上面的通配误伤） ----------------
+!tasks/**/templates/
+!tasks/**/templates/**
+!README.md
+!requirements.txt
