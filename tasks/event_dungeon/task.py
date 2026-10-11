@@ -117,10 +117,11 @@ class Task(TaskBase):
             if ctx.stopped():
                 break
 
-            # 道具用完的判据 1（最可靠）：备战页「剩余挑战次数 = 0」
-            s_zero = g.challenge_count_zero()
-            if s_zero >= 0.75:
-                ctx.log(f"备战页剩余挑战次数为 0（匹配 {s_zero:.3f}）→ 活动道具已用完，任务完成")
+            # 道具用完的判据 1（最可靠）：备战页「门票次数 = 0」
+            exhausted, s_zero, s_icon = g.challenge_count_zero()
+            if exhausted:
+                ctx.log(f"备战页门票次数为 0（门票图标 {s_icon:.3f} / 数字 {s_zero:.3f}）"
+                        f"→ 活动门票已用完，任务完成")
                 ctx.log(f"本次共完成 {ok_cnt} 次")
                 return
 

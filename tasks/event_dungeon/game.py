@@ -53,12 +53,18 @@ R_BOTTOM = (0, 890, 1920, 1080)          # 底部区域（含挑战键）
 R_END_TEXT = (700, 960, 1230, 1080)      # 「点击屏幕继续」搜索区
 R_END_STRIP = (0, 860, 1920, 1080)       # 快速检测条带（含挑战键 + 结束文字）
 R_NO_ITEM_TOAST = (650, 270, 1300, 390)  # 「琥珀卷轴不足」等道具提示搜索区
-R_COUNT_ZERO = (1180, 15, 1330, 85)      # 备战页「剩余挑战次数」数字区
+# ⚠ 备战页顶栏有**两组**「图标 + 数字」，必须分清楚：
+#     左：卷轴图标 + 门票次数（真正要看的）    右：「五倍」图标 + 五倍券（不是门票！）
+#   曾经因为没区分、又用死坐标+贴边阈值，把「五倍券 0」误判成门票用尽，
+#   门票还有 300 就提前收工了。现在改成：先定位门票图标，再看它右边的数字。
+R_TICKET_ICON = (1020, 10, 1340, 95)     # 门票图标搜索区
+R_TICKET_NUM = (1150, 10, 1340, 95)      # 门票数字区（图标右边）
 
 TH_END_TEXT = 0.72                       # 结束画面文字匹配阈值
 TH_END_STRIP = 0.80                      # 条带快速判据阈值（略低，后面会用整屏复核）
 TH_NO_ITEM = 0.80                        # 道具不足提示阈值（实测有 1.0 / 无 ≤0.55）
-TH_COUNT_ZERO = 0.75                     # 「次数为 0」阈值（实测 1.0 / 非0 ≤0.42）
+TH_TICKET_ICON = 0.70                    # 门票图标（实测备战页 0.985~1.0，其它页 ≤0.29）
+TH_TICKET_ZERO = 0.80                    # 门票次数为 0（实测 0 时 1.0，300/296 时 ≤0.53）
 
 # 点击目标名（实际随机落点由 humanize.JITTER_BOX 决定）
 T_GO_ACTIVITY = "go"            # 活动总览页 前往活动
@@ -131,15 +137,31 @@ class Game:
                                mask_path=tpl("t_no_item_toast_mask.png"))
         return s
 
-    def challenge_count_zero(self, img=None) -> float:
-        """备战页「剩余挑战次数 = 0」的匹配分数。
+    def challenge_count_zero(self, img=None):
+        """备战页「门票次数 = 0」的判定。
 
-        实测：次数为 0 时 1.000，次数 296 时 0.421，其它页面 ≤0.27。
-        这个判据不用抢时间（提示会秒消失），是最可靠的道具耗尽信号。
+        **必须区分顶栏那两组「图标 + 数字」**：
+          左：卷轴图标 + 门票次数（这里才是门票）
+          右：「五倍」图标 + 五倍券（五倍券为 0 是正常的，不代表门票用尽）
+        曾经把右边的五倍券 0 当成门票用尽，门票还有 300 就提前收工了。
+
+        做法：先用门票图标定位（图标特征强、比数字稳），再看图标右边的数字区。
+        返回 (是否用尽, 门票数字区匹配分, 图标匹配分)
+
+        实测：门票为 0 时数字分 1.000；门票 300 时 0.524、296 时 0.516；
+              图标分备战页 0.985~1.0，其它页面 ≤0.29。
         """
         img = img or self.a.screenshot()
-        s, _, _ = vision.match(img, tpl("t_count_zero.png"), region=R_COUNT_ZERO)
-        return s
+        s_icon, ix, iy = vision.match(img, tpl("t_ticket_icon.png"), region=R_TICKET_ICON)
+        # 门票数字区：以图标为锚点，确保看的是门票那一组而不是右边的五倍券。
+        # 注意 vision.match 返回的是**模板中心**坐标，不是左上角！
+        # 实测：门票数字的中心 = 图标中心 + (147, -3)（门票0 与门票300 两张图都一致）
+        if s_icon >= TH_TICKET_ICON and ix > 0:
+            region = (ix + 80, iy - 55, ix + 220, iy + 42)
+        else:
+            region = R_TICKET_NUM          # 图标没找到就退回固定区域
+        s0, _, _ = vision.match(img, tpl("t_ticket_zero.png"), region=region)
+        return s0 >= TH_TICKET_ZERO, round(float(s0), 3), round(float(s_icon), 3)
 
     def challenge_ready(self, img=None):
         """挑战键是否为「可点」状态（金色亮字）。

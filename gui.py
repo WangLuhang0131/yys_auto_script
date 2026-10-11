@@ -287,7 +287,8 @@ def _selftest():
         for label, p in (("结界-入口模板", jui.tpl("t_jj_entry_bottom.png")),
                          ("结界-庭院栏", jui.tpl("t_courtyard_bar.png")),
                          ("活动-挑战键", eg.tpl("t_challenge.png")),
-                         ("活动-次数0", eg.tpl("t_count_zero.png"))):
+                         ("活动-门票图标", eg.tpl("t_ticket_icon.png")),
+                         ("活动-门票为0", eg.tpl("t_ticket_zero.png"))):
             exist = os.path.exists(p)
             rec(f"{label}: {'OK' if exist else '!! 缺失'}  {p}")
             if not exist:
