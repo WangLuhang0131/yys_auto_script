@@ -22,6 +22,33 @@
 `adbkit.py` 里加了**全局串行锁**，所有 adb 调用排队执行；截图另带退避重试。
 修完之后：单线程 8/8 成功、与看门狗线程并发同样 8/8 成功。
 
+### 重启电脑后第一次运行会失败（已做成自愈）
+
+**现象**：重启电脑后直接点「执行任务」，报
+`screencap(png) 失败: cannot identify image file <_io.BytesIO object ...>`，
+任务刚开始就异常退出。
+
+**原因实测**：`adb kill-server` 之后立刻 `adb devices`，返回的是
+
+```
+List of devices attached
+emulator-5554   offline          <-- 注意是 offline，不是 device
+```
+
+设备没就绪时 `exec-out screencap -p` 拿到的是空包/错误文本，PIL 自然认不出来——
+所以那句报错**完全没说明真正原因**。
+
+**现在的处理**：
+
+| 环节 | 行为 |
+|---|---|
+| 任务开始前 | 先查 `adb devices`，不是 `device` 就等（最多 90s），中途主动 `start-server` + 重连 |
+| 截图连续失败 | 查设备状态 → 掉线就自动重启 adb 服务并等它回来（最多 60s）→ 再报错 |
+| 报错文案 | 说清状态，如 `设备状态=offline（模拟器在，但 adb 还没连上）……请确认 MuMu 已启动并加载完` |
+| 自愈过程 | 显示在界面日志里（`adbkit._DIAG_LOG` 由 runner 接到日志函数；**windowed exe 没 stdout，print 会消失**） |
+
+实测：`adb kill-server` 后立刻启动任务 → 自动恢复 → 完整跑完一轮战斗并回庭院。
+
 ---
 
 ## 二、活动副本（古迹演武）

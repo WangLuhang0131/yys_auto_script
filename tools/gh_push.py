@@ -21,6 +21,7 @@ import base64
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,25 +34,45 @@ SKIP_EXT = {".pyc", ".pyo", ".log", ".spec"}
 SKIP_NAME_PREFIX = ("shots_out_of_ticket",)
 
 
-def req(method: str, path: str, token: str, data=None):
+def req(method: str, path: str, token: str, data=None, retries: int = 4):
+    """发一个 GitHub API 请求。
+
+    网络抖动时 GitHub 会返回 500/502/503/504 或直接断连；推送 150+ 个文件时
+    撞上一次就白跑两分钟，所以这里的失败一律退避重试。
+    （403/404/409/422 这类是业务错误，重试没意义，直接返回。）
+    """
     url = path if path.startswith("http") else API + path
     body = json.dumps(data).encode() if data is not None else None
-    r = urllib.request.Request(url, data=body, method=method)
-    r.add_header("Authorization", f"Bearer {token}")
-    r.add_header("Accept", "application/vnd.github+json")
-    r.add_header("User-Agent", "yys-push-script")
-    if body:
-        r.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(r, timeout=60) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-            return resp.status, (json.loads(raw) if raw.strip() else {})
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", "replace")
+    last = (0, {})
+    for attempt in range(retries + 1):
+        r = urllib.request.Request(url, data=body, method=method)
+        r.add_header("Authorization", f"Bearer {token}")
+        r.add_header("Accept", "application/vnd.github+json")
+        r.add_header("User-Agent", "yys-push-script")
+        if body:
+            r.add_header("Content-Type", "application/json")
         try:
-            return e.code, json.loads(raw)
-        except Exception:
-            return e.code, {"raw": raw}
+            with urllib.request.urlopen(r, timeout=60) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+                return resp.status, (json.loads(raw) if raw.strip() else {})
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", "replace")
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = {"raw": raw}
+            last = (e.code, parsed)
+            # 只对服务端错误/限流重试
+            if e.code not in (429, 500, 502, 503, 504):
+                return last
+        except Exception as e:                      # 断连、超时等
+            last = (0, {"raw": f"{type(e).__name__}: {e}"})
+        if attempt < retries:
+            wait = 2.0 * (attempt + 1)
+            print(f"    [重试 {attempt+1}/{retries}] {method} {url.split('/repos/')[-1][:60]} "
+                  f"-> {last[0]}，等 {wait:.0f}s", flush=True)
+            time.sleep(wait)
+    return last
 
 
 def should_skip(rel: str) -> bool:

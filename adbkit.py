@@ -27,6 +27,18 @@ _ADB_LOCK = threading.Lock()
 # （源码用 python.exe 运行时不会暴露这个问题，因为父进程有控制台可共用。）
 _NO_WINDOW = 0x08000000 if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
 
+# 自愈过程的记录器：由 GUI 启动时替换成日志函数（见 core/runner.py），
+# 这样"正在等设备就绪/正在重启 adb"能显示在界面上。
+# 打包成 windowed exe 后没有 stdout，print 会消失，所以必须走这个回调。
+def _diag_log(msg: str):
+    try:
+        print(f"[adb] {msg}", flush=True)
+    except Exception:
+        pass
+
+
+_DIAG_LOG = _diag_log
+
 
 class Adb:
     def __init__(self, adb_path: str = ADB, serial: str = SERIAL, rotate: bool = True,
@@ -50,6 +62,106 @@ class Adb:
     def shell(self, cmd: str, timeout: float = 30) -> str:
         return self.raw("shell", cmd, timeout=timeout).decode("utf-8", "replace").strip()
 
+    # ---------- 设备就绪 / 自愈 ----------
+    def device_state(self) -> str:
+        """返回设备状态字符串：device / offline / unauthorized / notfound / unknown。
+
+        刚开机时 adb 服务没跑、或者设备还在连，这里会是 offline / notfound，
+        而 screencap 只会返回空包——所以报错前必须先看这个状态。
+        """
+        try:
+            with _ADB_LOCK:
+                p = subprocess.run([self.adb, "devices"], capture_output=True,
+                                   timeout=20, creationflags=_NO_WINDOW)
+            text = p.stdout.decode("utf-8", "replace")
+        except Exception:
+            return "unknown"
+        for line in text.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == self.serial:
+                return parts[1]
+        return "notfound"
+
+    def wait_ready(self, timeout: float = 90, log=None) -> bool:
+        """等设备变成 device 状态。刚重启电脑后 MuMu 自己和 adb 都要时间起来。
+
+        中途会主动拉一把：start-server -> 重连 -> 再等。
+        返回是否就绪。
+        """
+        t0 = time.time()
+        tried_recover = False
+        last = None
+        while time.time() - t0 < timeout:
+            st = self.device_state()
+            if st == "device":
+                if last is not None and log:
+                    log(f"设备已就绪（{time.time()-t0:.1f}s）")
+                return True
+            if st != last:
+                if log:
+                    log(f"等待设备就绪... 当前状态={st}"
+                        f"（刚重启电脑时 MuMu 和 adb 都需要一点时间）")
+                last = st
+            # 等了一会儿还不行，就主动恢复一次
+            if not tried_recover and time.time() - t0 > 5:
+                tried_recover = True
+                self.recover(log=log)
+            time.sleep(1.5)
+        if log:
+            log(f"!! 等了 {timeout:.0f}s 设备仍未就绪（最后状态={last}）")
+        return False
+
+    def recover(self, log=None):
+        """重启 adb 服务并重连设备。用于截图连续失败时自愈。"""
+        def _run(args):
+            try:
+                with _ADB_LOCK:
+                    return subprocess.run([self.adb] + args, capture_output=True,
+                                          timeout=60, creationflags=_NO_WINDOW)
+            except Exception as e:
+                if log:
+                    log(f"  adb {' '.join(args)} 异常：{e}")
+                return None
+
+        if log:
+            log("  adb 异常自愈：重启 adb 服务并重连设备")
+        _run(["kill-server"])
+        time.sleep(1.0)
+        _run(["start-server"])
+        time.sleep(1.0)
+        _run(["connect", "127.0.0.1:5555"])       # MuMu 常见的无线调试端口
+        time.sleep(0.5)
+        _run(["reconnect", "offline"])
+        time.sleep(0.5)
+
+    def wait_online_after_fail(self, log=None) -> bool:
+        """截图失败后的补救：重启服务 + 等设备回来。"""
+        self.recover(log=log)
+        return self.wait_ready(timeout=60, log=log)
+
+    def _explain_shot_failure(self, kind: str, last_err) -> str:
+        """截图连续失败时，给出人能看懂的诊断信息，并尝试自愈一次。
+
+        最常见的原因不是"截图偶发失败"，而是设备掉线：
+        刚重启电脑时 adb 服务没跑、MuMu 还没连上，此时
+        `adb devices` 会显示 offline / notfound，screencap 只会返回空包。
+        """
+        st = self.device_state()
+        if st != "device":
+            recovered = self.wait_online_after_fail(log=_DIAG_LOG)
+            if recovered:
+                return (f"screencap({kind}) 失败：设备一开始是 {st}（未就绪），"
+                        f"已自动重启 adb 并恢复连接，请重试任务")
+            hint = {
+                "offline": "模拟器在，但 adb 还没连上",
+                "notfound": "没找到这个设备（模拟器没开？或设备号变了）",
+                "unauthorized": "设备未授权，看看模拟器里有没有弹授权框",
+                "unknown": "adb 命令本身执行不了（路径对不对？）",
+            }.get(st, "")
+            return (f"screencap({kind}) 失败：设备状态={st}（{hint}）。"
+                    f"请确认 MuMu 已启动并加载完，再重试")
+        return f"screencap({kind}) 失败: {last_err}（设备在线，属于模拟器偶发问题，可直接重试）"
+
     # ---------- 截图 ----------
     def _raw_frame(self, retries: int = 4):
         """取原始帧 (w, h, memoryview)。比 PNG 快约 3 倍（实测 334ms vs 939ms）。"""
@@ -70,7 +182,7 @@ class Adb:
             except Exception as e:
                 last = e
                 time.sleep(0.8)
-        raise RuntimeError(f"screencap(raw) 失败: {last}")
+        raise RuntimeError(self._explain_shot_failure("raw", last))
 
     def grab_land(self, box=None, retries: int = 4, raw: bool = True):
         """
@@ -114,13 +226,16 @@ class Adb:
             data = self.raw("exec-out", "screencap", "-p")
             try:
                 img = Image.open(io.BytesIO(data))
+                img.load()                     # 必须真正解码，否则坏数据到后面才炸
                 break
             except Exception as e:
                 last_err = e
                 # 空包是模拟器的偶发问题，退避重试；重试次数给足
                 time.sleep(0.4 + 0.3 * i)
         else:
-            raise RuntimeError(f"screencap(png) 失败: {last_err}")
+            # 重试用完：多半不是"偶发"，而是设备掉线（例如刚重启电脑）。
+            # 先看设备状态并试着自愈，再给出**能看懂**的报错。
+            raise RuntimeError(self._explain_shot_failure("png", last_err))
         portrait = img.height > img.width
         if portrait and self.rotate:
             W, H = img.size

@@ -90,6 +90,10 @@ class TaskRunner:
 
         try:
             adb = Adb(serial=serial, shot_mode=shot_mode) if serial else Adb(shot_mode=shot_mode)
+            # 让 adb 层的自愈过程（等设备就绪 / 重启 adb 服务）能显示在界面日志里。
+            # 打包成 windowed exe 后没有 stdout，print 会消失，所以必须接到这里。
+            import adbkit
+            adbkit._DIAG_LOG = log
             # 点击互斥锁：看门狗线程和主任务线程共用，避免同一瞬间两次点击撞在一起
             tap_lock = threading.Lock()
             human = Human(adb, log=log, tap_lock=tap_lock)
@@ -101,6 +105,18 @@ class TaskRunner:
             log(f"=== 任务开始：{name} ===")
             log(f"截图模式：{'彩色(PNG)' if shot_mode == 'color' else '灰度(原始帧)'}"
                 f"  目标次数：{target_runs or '不限'}")
+
+            # 开机/重启后 adb 服务和模拟器都要时间起来，先等设备就绪再动手，
+            # 免得第一张截图就拿到空包、报个看不懂的 "cannot identify image file"。
+            st = adb.device_state()
+            if st != "device":
+                log(f"设备当前状态={st}，先等它就绪（重启电脑后 MuMu 和 adb 都需要时间）...")
+                if not adb.wait_ready(timeout=90, log=log):
+                    log("!! 设备一直没就绪。请确认：MuMu 已启动并进入游戏画面")
+                    self.q.put(("done", f"{name} 未开始：设备未就绪"))
+                    return
+            log(f"adb 设备就绪（{adb.serial}）")
+
             ok, tip = task.check_ready(ctx)
             if not ok:
                 log(f"!! 无法开始：{tip}")
