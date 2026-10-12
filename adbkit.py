@@ -13,9 +13,73 @@ import time
 from PIL import Image
 
 # ---------------- 配置 ----------------
-ADB = r"E:\MuMuPlayer\nx_main\adb.exe"
+# adb.exe 的位置：不再写死一台机器的路径（别人 clone 下去会找不到 adb）。
+# 查找顺序见 find_adb()：环境变量 -> PATH -> 常见安装位置 -> 内置默认值。
+ADB_DEFAULT = r"E:\MuMuPlayer\nx_main\adb.exe"
 SERIAL = "emulator-5554"          # MuMu 12 默认；可改
 GAME_W, GAME_H = 1920, 1080       # 游戏画面（横屏）逻辑分辨率
+
+
+def find_adb():
+    """找一个能用的 adb.exe，并顺手挑一个存在的模拟器设备号。
+
+    返回 (adb路径, 设备号)。找不到 adb 就退回内置默认值（后面调用会报错并给出提示）。
+    """
+    import os
+    import shutil
+
+    cands = []
+    env = os.environ.get("YYS_ADB") or os.environ.get("ADB")
+    if env:
+        cands.append(env)
+    # 优先用模拟器自带的 adb：版本和模拟器匹配，能少一类"两个 adb 抢 5037 端口"
+    # 的毛病（实测症状是 devices 列表一会儿有一会儿没有）。
+    for drive in ("C:", "D:", "E:", "F:", "G:"):
+        cands += [
+            rf"{drive}\MuMuPlayer\nx_main\adb.exe",
+            rf"{drive}\MuMuPlayer-12.0\shell\adb.exe",
+            rf"{drive}\Program Files\MuMuPlayer-12.0\shell\adb.exe",
+            rf"{drive}\Program Files\Netease\MuMuPlayer-12.0\shell\adb.exe",
+        ]
+    which = shutil.which("adb")
+    if which:
+        cands.append(which)
+    # 通用 Android SDK 位置
+    cands += [
+        os.path.expanduser(r"~\AppData\Local\Android\Sdk\platform-tools\adb.exe"),
+        r"C:\platform-tools\adb.exe",
+    ]
+    cands.append(ADB_DEFAULT)
+
+    chosen = None
+    for c in cands:
+        try:
+            if c and os.path.isfile(c):
+                chosen = c
+                break
+        except Exception:
+            continue
+    if chosen is None:
+        chosen = ADB_DEFAULT
+
+    # 设备号：如果默认那个不在列表里，就挑一个在的
+    serial = SERIAL
+    try:
+        p = subprocess.run([chosen, "devices"], capture_output=True, timeout=20,
+                           creationflags=_NO_WINDOW)
+        lines = p.stdout.decode("utf-8", "replace").splitlines()[1:]
+        found = [ln.split()[0] for ln in lines if len(ln.split()) >= 2]
+        if found and serial not in found:
+            serial = found[0]
+    except Exception:
+        pass
+    return chosen, serial
+
+
+# 模块导入时就解析一次；同时把结果写回 ADB / SERIAL，
+# 这样 `from adbkit import ADB` 这种老写法也还能用。
+ADB, SERIAL = find_adb()
+
 
 # 全局串行锁：多个线程（主任务 + 弹窗看门狗）同时跑 adb 会让 screencap 返回空包，
 # 所以所有 adb 调用一律排队执行。
@@ -41,8 +105,14 @@ _DIAG_LOG = _diag_log
 
 
 class Adb:
-    def __init__(self, adb_path: str = ADB, serial: str = SERIAL, rotate: bool = True,
-                 coord_mode: str = "identity", shot_mode: str = "color"):
+    def __init__(self, adb_path: str | None = None, serial: str | None = None,
+                 rotate: bool = True, coord_mode: str = "identity",
+                 shot_mode: str = "color"):
+        # 不写死路径：默认自动查找（换电脑/换安装目录也能用）
+        if adb_path is None or serial is None:
+            found_adb, found_serial = find_adb()
+            adb_path = adb_path or found_adb
+            serial = serial or found_serial
         self.adb = adb_path
         self.serial = serial
         self.rotate = rotate          # 截图旋转成横屏
@@ -64,23 +134,54 @@ class Adb:
 
     # ---------- 设备就绪 / 自愈 ----------
     def device_state(self) -> str:
-        """返回设备状态字符串：device / offline / unauthorized / notfound / unknown。
+        """返回设备状态：device / offline / unauthorized / notfound / unknown。
 
-        刚开机时 adb 服务没跑、或者设备还在连，这里会是 offline / notfound，
+        刚开机时 adb 服务没跑、或设备还在连，这里会是 offline / notfound，
         而 screencap 只会返回空包——所以报错前必须先看这个状态。
+
+        ⚠ 实测坑：`adb devices` 和 `adb get-state` 有时给出的状态**不一致**。
+        刚重启 daemon / 设备正在重新握手时，devices 显示 offline，
+        但 get-state 已经能返回 device（这时截图其实是通的）。
+        所以两边都要看，只要有一个说 device 就认为就绪。
         """
+        listed = "unknown"
         try:
             with _ADB_LOCK:
                 p = subprocess.run([self.adb, "devices"], capture_output=True,
                                    timeout=20, creationflags=_NO_WINDOW)
             text = p.stdout.decode("utf-8", "replace")
+            listed = "notfound"
+            for line in text.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == self.serial:
+                    listed = parts[1]
+                    break
         except Exception:
-            return "unknown"
-        for line in text.splitlines()[1:]:
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] == self.serial:
-                return parts[1]
-        return "notfound"
+            listed = "unknown"
+        if listed == "device":
+            return "device"
+        # devices 说不是 device，再用 get-state 复核一次（更接近"能不能真的通信"）
+        try:
+            with _ADB_LOCK:
+                p = subprocess.run([self.adb, "-s", self.serial, "get-state"],
+                                   capture_output=True, timeout=20,
+                                   creationflags=_NO_WINDOW)
+            got = p.stdout.decode("utf-8", "replace").strip()
+            if got == "device":
+                return "device"
+        except Exception:
+            pass
+        return listed
+
+    def devices_text(self) -> str:
+        """原始 `adb devices` 输出（排查问题时用，别只看解析结果）。"""
+        try:
+            with _ADB_LOCK:
+                p = subprocess.run([self.adb, "devices"], capture_output=True,
+                                   timeout=20, creationflags=_NO_WINDOW)
+            return p.stdout.decode("utf-8", "replace").strip()
+        except Exception as e:
+            return f"<adb devices 执行失败: {e}>"
 
     def wait_ready(self, timeout: float = 90, log=None) -> bool:
         """等设备变成 device 状态。刚重启电脑后 MuMu 自己和 adb 都要时间起来。
@@ -99,8 +200,16 @@ class Adb:
                 return True
             if st != last:
                 if log:
-                    log(f"等待设备就绪... 当前状态={st}"
-                        f"（刚重启电脑时 MuMu 和 adb 都需要一点时间）")
+                    log(f"等待设备就绪... 当前状态={st}")
+                    if st == "notfound":
+                        # 这种情况多半是"另一个 adb 在抢 5037 端口"：
+                        # MuMu 自带的 adb 会把别人的 daemon 杀掉自己起一个，
+                        # 两个 adb 版本互相打架时，设备列表会一会儿有一会儿没有。
+                        log("    设备列表里没有这台设备。常见原因：")
+                        log("      · MuMu 自带的 adb 和脚本用的 adb 版本不一致，"
+                            "两边抢 5037 端口")
+                        log("      · 模拟器刚启动，还没把 usb 调试端口接上")
+                        log(f"    当前 adb devices 原始输出：{self.devices_text()!r}")
                 last = st
             # 等了一会儿还不行，就主动恢复一次
             if not tried_recover and time.time() - t0 > 5:
@@ -153,13 +262,16 @@ class Adb:
                 return (f"screencap({kind}) 失败：设备一开始是 {st}（未就绪），"
                         f"已自动重启 adb 并恢复连接，请重试任务")
             hint = {
-                "offline": "模拟器在，但 adb 还没连上",
-                "notfound": "没找到这个设备（模拟器没开？或设备号变了）",
+                "offline": "模拟器在，但 adb 还没握手完",
+                "notfound": "adb 设备列表里没有这台设备",
                 "unauthorized": "设备未授权，看看模拟器里有没有弹授权框",
                 "unknown": "adb 命令本身执行不了（路径对不对？）",
             }.get(st, "")
             return (f"screencap({kind}) 失败：设备状态={st}（{hint}）。"
-                    f"请确认 MuMu 已启动并加载完，再重试")
+                    f"adb devices 原始输出：{self.devices_text()!r}。"
+                    f"如果模拟器确实开着，通常是 MuMu 自带的 adb 和本脚本用的 adb "
+                    f"版本不一致、互相抢 5037 端口；把 adbkit.py 里的 ADB 或者"
+                    f"环境变量 YYS_ADB 指向 MuMu 目录下那个 adb.exe 即可")
         return f"screencap({kind}) 失败: {last_err}（设备在线，属于模拟器偶发问题，可直接重试）"
 
     # ---------- 截图 ----------

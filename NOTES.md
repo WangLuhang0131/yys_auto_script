@@ -49,6 +49,45 @@ emulator-5554   offline          <-- 注意是 offline，不是 device
 
 实测：`adb kill-server` 后立刻启动任务 → 自动恢复 → 完整跑完一轮战斗并回庭院。
 
+#### 后续：`devices` 和 `get-state` 会给出**互相矛盾**的状态
+
+实测同一个时刻：
+
+```
+adb devices    -> List of devices attached | emulator-5554   offline
+adb get-state  -> device
+```
+
+刚重启 daemon、设备在重新握手时就会这样——此时 `devices` 说 offline，
+但 `get-state` 已经能通信（截图其实是通的）。
+所以 `device_state()` 现在是：**两边都看，有一个说 device 就算就绪**。
+
+#### 为什么会出现 `notfound`（设备列表里连行都没有）
+
+用户日志里出现过 `设备当前状态=notfound` 且一直不恢复，但同时在命令行敲
+`adb devices` 却能看到设备。原因是**有两个 adb 在抢 5037 端口**：
+MuMu 自带的 adb（v36.0.0）和别处的 adb 会互相把对方的 daemon 杀掉、自己起一个，
+争抢期间设备列表就会一会儿有一会儿没有。
+
+对策：
+1. `find_adb()` **优先挑模拟器自带的 adb**（版本匹配），其次 PATH，最后 SDK 目录；
+   也可以用环境变量 `YYS_ADB` 指定；
+2. `wait_ready()` 在 `notfound` 时会把 **adb devices 的原始输出**打进日志——
+   排查这类问题不能只看解析后的状态；
+3. adb 路径不再写死某一台机器的绝对路径（否则别人 clone 下去必然找不到）。
+
+#### 报错文案不再"甩锅给用户"
+
+以前 `notfound` 会提示"模拟器没开？"，但用户模拟器明明开着。
+现在按状态给准确的解释，并把 adb 原始输出一起带上：
+
+| 状态 | 提示 |
+|---|---|
+| offline | 模拟器在，但 adb 还没握手完 |
+| notfound | adb 设备列表里没有这台设备（附原始输出） |
+| unauthorized | 设备未授权，看模拟器有没有弹授权框 |
+| unknown | adb 命令本身跑不起来（路径对不对？） |
+
 ---
 
 ## 二、活动副本（古迹演武）

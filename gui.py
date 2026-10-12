@@ -313,6 +313,19 @@ def _selftest():
     try:
         import adbkit
         a = adbkit.Adb()
+        rec(f"adb 路径: {a.adb}")
+        rec(f"adb 序列号: {a.serial}")
+        # 把 adb 的**原始输出**记下来：排查"外面能连、脚本里连不上"必须看原始返回
+        for tag, args in (("devices", ["devices"]),
+                          ("version", ["version"]),
+                          ("get-state", ["-s", a.serial, "get-state"])):
+            try:
+                out = a.raw(*args, timeout=20)
+                txt = out.decode("utf-8", "replace").strip().replace("\n", " | ")
+                rec(f"adb {tag}: {txt[:160]!r}  ({len(out)} 字节)")
+            except Exception as e:
+                rec(f"!! adb {tag} 异常: {type(e).__name__} {e}")
+        rec(f"device_state() 判定: {a.device_state()}")
         t0 = time.time()
         im = a.screenshot()
         rec(f"adb 截图 OK: {im.size} 用时 {time.time()-t0:.2f}s")
