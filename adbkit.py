@@ -176,7 +176,12 @@ class Adb:
         return False
 
     def recover(self, log=None):
-        """重启 adb 服务并重连设备。用于截图连续失败时自愈。"""
+        """设备掉线时拉一把。
+
+        ⚠ 这里**故意不调 kill-server**：adb 服务是 MuMu 自己在管的，
+        杀掉它等于去重启模拟器自己的 daemon，反而更容易把连接搞乱。
+        只做温和的两件事：确认服务在跑、让 adb 重新握手一次。
+        """
         def _run(args):
             try:
                 with _ADB_LOCK:
@@ -188,14 +193,10 @@ class Adb:
                 return None
 
         if log:
-            log("  adb 异常自愈：重启 adb 服务并重连设备")
-        _run(["kill-server"])
-        time.sleep(1.0)
-        _run(["start-server"])
-        time.sleep(1.0)
-        _run(["connect", "127.0.0.1:5555"])       # MuMu 常见的无线调试端口
+            log(f"  adb 未就绪，尝试重新握手（设备 {self.serial}）")
+        _run(["start-server"])                    # 服务没跑时把它拉起来（不杀）
         time.sleep(0.5)
-        _run(["reconnect", "offline"])
+        _run(["reconnect", "offline"])            # 让 offline 的设备重新握手
         time.sleep(0.5)
 
     def wait_online_after_fail(self, log=None) -> bool:
