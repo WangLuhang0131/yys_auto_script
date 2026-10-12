@@ -154,9 +154,38 @@ class Returner:
         time.sleep(1.8)
         return warn_pixels(self.a.screenshot()) < PROFILE_MIN_PIXELS
 
+    # ---------- 辅助 ----------
+    def _wait_page_change(self, before, timeout=8.0, interval=0.8):
+        """点完返回后，等页面**真的**变成别的（最多 timeout 秒）。
+
+        为什么要这样：实测点一次返回，1 秒后庭院分就有 0.986 了，
+        但页面切换动画期间某几帧会识别不出来。所以不能"傻等固定秒数再判断一次"，
+        而要**短间隔反复看**，看到变了就立刻继续。
+        返回最新识别到的页面。
+        """
+        t0 = time.time()
+        last = before
+        tries = 0
+        while time.time() - t0 < timeout:
+            time.sleep(interval)
+            last = self.detect()
+            tries += 1
+            if last != before:
+                self.log(f"      （等了 {time.time()-t0:.1f}s、看 {tries} 次后变成 {last}）")
+                return last
+        self.log(f"      !! 等了 {timeout:.0f}s、看了 {tries} 次，页面仍然是 {last}")
+        return last
+
     # ---------- 主循环 ----------
     def go_home(self):
-        """返回 (是否成功回到庭院, 步数)。"""
+        """返回 (是否成功回到庭院, 步数)。
+
+        ⚠ 安全约束（实测踩过）：
+        在**庭院上按系统返回键会弹"退出游戏"确认框**。曾经因为某一帧没认出庭院
+        （顶部横幅等瞬时遮挡），就一路按返回，结果在庭院上弹出退出确认。
+        所以这里：连续按返回最多 3 次，之后只做温和操作，绝不硬按返回。
+        """
+        back_streak = 0
         for step in range(1, self.max_steps + 1):
             page = self.detect()
             self.log(f"  回庭院 第{step}步：当前={page}")
@@ -164,23 +193,43 @@ class Returner:
                 return True, step
             if page == "jiejie":
                 self.human.tap("jj_close", *TAP_JJ_CLOSE, note="关结界突破页")
-                time.sleep(2.5)
+                self._wait_page_change("jiejie")
+                back_streak = 0
             elif page == "explore":
                 self.human.tap("back", *TAP_BACK, note="返回")
-                time.sleep(2.5)
+                self._wait_page_change("explore")
+                back_streak += 1
             elif page == "activity":
                 self.human.tap("back", *TAP_BACK, note="返回")
-                time.sleep(2.5)
+                self._wait_page_change("activity")
+                back_streak += 1
             elif page == "settle":
                 self.human.tap("dismiss", 300, 950, note="点掉结算")
                 time.sleep(1.5)
+                back_streak = 0
             else:
                 if self.dismiss_dialog():
+                    back_streak = 0
+                    continue
+                if back_streak >= 3:
+                    # 已经在退回庭院的路上按了好几次返回，再按就可能弹退出确认。
+                    # 改成重新看一眼页面，只做无害的点击。
+                    self.log("    已按多次返回，为避免弹出「退出游戏」确认框，"
+                             "改为等待并重新确认页面")
+                    time.sleep(2.0)
+                    p2 = self.detect()
+                    if p2 == "courtyard":
+                        return True, step
+                    if p2 != "unknown":
+                        continue
+                    self.human.tap("center", *TAP_CENTER, note="兜底点击")
+                    time.sleep(1.5)
                     continue
                 # 认不出：先试系统返回键（比盲点稳）
                 self.log("    认不出页面，按系统返回键试试")
                 self.a.key("KEYCODE_BACK")
                 time.sleep(2.0)
+                back_streak += 1
                 p2 = self.detect()
                 if p2 == "unknown":
                     self.human.tap("center", *TAP_CENTER, note="兜底点击")

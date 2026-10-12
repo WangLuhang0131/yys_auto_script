@@ -108,11 +108,16 @@ class TaskRunner:
 
             # 开机/重启后 adb 服务和模拟器都要时间起来，先等设备就绪再动手，
             # 免得第一张截图就拿到空包、报个看不懂的 "cannot identify image file"。
+            log(f"adb：{adb.adb}  设备：{adb.serial}")
             st = adb.device_state()
             if st != "device":
-                log(f"设备当前状态={st}，先等它就绪（重启电脑后 MuMu 和 adb 都需要时间）...")
+                # 一定要把**原始输出**打出来：解析后的状态看不出问题在哪，
+                # 而"外面能连、脚本里连不上"这类事只能靠原始输出定位。
+                log(f"设备当前状态={st}，先等它就绪")
+                log(f"    adb devices 原始输出：{adb.devices_text()!r}")
                 if not adb.wait_ready(timeout=90, log=log):
-                    log("!! 设备一直没就绪。请确认：MuMu 已启动并进入游戏画面")
+                    log("!! 设备一直没就绪。上面那行原始输出就是证据，"
+                        "请把它发我；同时确认 MuMu 已启动并进入游戏画面")
                     self.q.put(("done", f"{name} 未开始：设备未就绪"))
                     return
             log(f"adb 设备就绪（{adb.serial}）")

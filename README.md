@@ -37,6 +37,12 @@ pip install -r requirements.txt
 start_gui.bat          :: 或 python gui.py
 ```
 
+> **`start_gui.bat` 双击就闪退？** 说明它找到的 `python` 是**微软商店的占位程序**
+> （`...\WindowsApps\python.EXE`）：这种"python"不执行脚本，所以窗口一闪就没了。
+> 现在的检测会真的去 `import tkinter, PIL, numpy`，占位程序通不过，会跳到别的候选；
+> 全都不可用时也会停下来 `pause` 并把原因打出来，不会再闪退。
+> 想彻底解决就装官方 Python 3.10+（安装时勾选 Add to PATH）。
+
 ### 出问题时自检
 
 ```bat
