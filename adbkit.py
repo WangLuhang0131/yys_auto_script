@@ -13,72 +13,31 @@ import time
 from PIL import Image
 
 # ---------------- 配置 ----------------
-# adb.exe 的位置：不再写死一台机器的路径（别人 clone 下去会找不到 adb）。
-# 查找顺序见 find_adb()：环境变量 -> PATH -> 常见安装位置 -> 内置默认值。
-ADB_DEFAULT = r"E:\MuMuPlayer\nx_main\adb.exe"
-SERIAL = "emulator-5554"          # MuMu 12 默认；可改
+# 就用 MuMu 自带的 adb，不折腾别的。
+# 只做一件事：目录不在 E 盘时（换台电脑可能装在别的盘）跟着换一下盘符，
+# 免得别人 clone 下去第一件事就是改路径。显式指定用环境变量 YYS_ADB。
+ADB = r"E:\MuMuPlayer\nx_main\adb.exe"
+SERIAL = "emulator-5554"          # MuMu 12 默认
 GAME_W, GAME_H = 1920, 1080       # 游戏画面（横屏）逻辑分辨率
 
 
-def find_adb():
-    """找一个能用的 adb.exe，并顺手挑一个存在的模拟器设备号。
-
-    返回 (adb路径, 设备号)。找不到 adb 就退回内置默认值（后面调用会报错并给出提示）。
-    """
+def _resolve_adb():
+    """返回要用的 adb.exe 路径：MuMu 自带那个。"""
     import os
-    import shutil
-
-    cands = []
-    env = os.environ.get("YYS_ADB") or os.environ.get("ADB")
-    if env:
-        cands.append(env)
-    # 优先用模拟器自带的 adb：版本和模拟器匹配，能少一类"两个 adb 抢 5037 端口"
-    # 的毛病（实测症状是 devices 列表一会儿有一会儿没有）。
+    env = os.environ.get("YYS_ADB")
+    if env and os.path.isfile(env):
+        return env
+    if os.path.isfile(ADB):
+        return ADB
+    # 同一条相对路径，换个盘符试试（就这一种情况，不做"到处找 adb"）
     for drive in ("C:", "D:", "E:", "F:", "G:"):
-        cands += [
-            rf"{drive}\MuMuPlayer\nx_main\adb.exe",
-            rf"{drive}\MuMuPlayer-12.0\shell\adb.exe",
-            rf"{drive}\Program Files\MuMuPlayer-12.0\shell\adb.exe",
-            rf"{drive}\Program Files\Netease\MuMuPlayer-12.0\shell\adb.exe",
-        ]
-    which = shutil.which("adb")
-    if which:
-        cands.append(which)
-    # 通用 Android SDK 位置
-    cands += [
-        os.path.expanduser(r"~\AppData\Local\Android\Sdk\platform-tools\adb.exe"),
-        r"C:\platform-tools\adb.exe",
-    ]
-    cands.append(ADB_DEFAULT)
-
-    chosen = None
-    for c in cands:
-        try:
-            if c and os.path.isfile(c):
-                chosen = c
-                break
-        except Exception:
-            continue
-    if chosen is None:
-        chosen = ADB_DEFAULT
-
-    # 设备号：如果默认那个不在列表里，就挑一个在的
-    serial = SERIAL
-    try:
-        p = subprocess.run([chosen, "devices"], capture_output=True, timeout=20,
-                           creationflags=_NO_WINDOW)
-        lines = p.stdout.decode("utf-8", "replace").splitlines()[1:]
-        found = [ln.split()[0] for ln in lines if len(ln.split()) >= 2]
-        if found and serial not in found:
-            serial = found[0]
-    except Exception:
-        pass
-    return chosen, serial
+        p = rf"{drive}\MuMuPlayer\nx_main\adb.exe"
+        if os.path.isfile(p):
+            return p
+    return ADB
 
 
-# 模块导入时就解析一次；同时把结果写回 ADB / SERIAL，
-# 这样 `from adbkit import ADB` 这种老写法也还能用。
-ADB, SERIAL = find_adb()
+ADB = _resolve_adb()
 
 
 # 全局串行锁：多个线程（主任务 + 弹窗看门狗）同时跑 adb 会让 screencap 返回空包，
@@ -108,13 +67,9 @@ class Adb:
     def __init__(self, adb_path: str | None = None, serial: str | None = None,
                  rotate: bool = True, coord_mode: str = "identity",
                  shot_mode: str = "color"):
-        # 不写死路径：默认自动查找（换电脑/换安装目录也能用）
-        if adb_path is None or serial is None:
-            found_adb, found_serial = find_adb()
-            adb_path = adb_path or found_adb
-            serial = serial or found_serial
-        self.adb = adb_path
-        self.serial = serial
+        # 默认就用 MuMu 自带那个 adb（模块顶部已经解析好）
+        self.adb = adb_path or ADB
+        self.serial = serial or SERIAL
         self.rotate = rotate          # 截图旋转成横屏
         self.coord_mode = coord_mode  # identity=直接用横屏坐标 / portrait=换算成竖屏坐标
         self.shot_mode = shot_mode    # color=PNG彩色(准) / raw=原始帧灰度(快3倍)
